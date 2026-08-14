@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nemotron 3 Nano WebGPU</title>
+  <style>
+    :root {
+      --bg: #000000;
+      --fg: #f4f4f5;
+      --mut: #a7a9ac;
+      --acc: #f54e00;
+      --fill: #005288;
+      --line: #1c1c1c;
+      --panel: #0a0a0a;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+      display: grid;
+      grid-template-columns: minmax(280px, 42%) 1fr;
+      min-height: 100%;
+    }
+    a { color: var(--acc); }
+    .hero {
+      border-right: 1px solid var(--line);
+      padding: 28px 28px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      background: radial-gradient(1200px 500px at 0% 0%, #00528833, transparent 60%);
+    }
+    .kicker {
+      font-size: 11px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--acc);
+      font-weight: 700;
+    }
+    h1 { font-size: 1.55rem; line-height: 1.15; margin: 0; font-weight: 650; }
+    .lede { color: var(--mut); margin: 0; font-size: 14.5px; line-height: 1.5; }
+    video {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: #000;
+      aspect-ratio: 16 / 9;
+      object-fit: cover;
+    }
+    .nums { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+    .card b { display: block; font-size: 1.25rem; color: var(--fg); }
+    .card span { font-size: 11px; color: var(--mut); letter-spacing: 0.02em; }
+    .warn {
+      background: #14110c;
+      color: #e8c07a;
+      border: 1px solid #3a2f18;
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .load-note { color: var(--mut); font-size: 13px; margin: 0; line-height: 1.45; }
+    button {
+      appearance: none;
+      border: 0;
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-weight: 700;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    #loadBtn { background: var(--acc); color: #000; }
+    #loadBtn:disabled { opacity: 0.45; cursor: wait; }
+    .bar {
+      height: 4px;
+      background: var(--line);
+      border-radius: 99px;
+      overflow: hidden;
+    }
+    .bar > i {
+      display: block;
+      height: 100%;
+      width: 0;
+      background: var(--fill);
+    }
+    .credit { color: var(--mut); font-size: 12px; margin-top: auto; }
+    .chat {
+      display: flex;
+      flex-direction: column;
+      min-height: 100%;
+      background: var(--bg);
+    }
+    .chat-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--line);
+    }
+    .dot {
+      width: 9px; height: 9px; border-radius: 50%;
+      background: #5a5a5a;
+    }
+    .dot.ready { background: var(--fill); }
+    .dot.busy { background: var(--acc); box-shadow: 0 0 0 4px #f54e0022; }
+    .dot.err { background: #c43c3c; }
+    .chat-head .meta { color: var(--mut); font-size: 13px; }
+    .chat-head .tok { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--acc); font-size: 13px; }
+    #log {
+      flex: 1;
+      overflow: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .bubble {
+      max-width: 78%;
+      padding: 10px 12px;
+      border-radius: 12px;
+      font-size: 14.5px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .user { align-self: flex-end; background: var(--fill); color: #fff; }
+    .asst { align-self: flex-start; background: #111; border: 1px solid var(--line); }
+    .form {
+      display: flex;
+      gap: 8px;
+      padding: 14px 16px 18px;
+      border-top: 1px solid var(--line);
+    }
+    #prompt {
+      flex: 1;
+      background: #111;
+      color: var(--fg);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font: inherit;
+    }
+    #sendBtn { background: var(--acc); color: #000; }
+    #sendBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .skip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--mut);
+      font-size: 12px;
+      padding: 0 16px 10px;
+    }
+    @media (max-width: 860px) {
+      body { grid-template-columns: 1fr; }
+      .hero { border-right: 0; border-bottom: 1px solid var(--line); }
+      .chat { min-height: 70vh; }
+    }
+  </style>
+</head>
+<body>
+  <aside class="hero">
+    <div class="kicker">SpaceXAI · Chrome / WebGPU</div>
+    <h1>Nemotron 3 Nano 4B, q4, in the browser</h1>
+    <p class="lede">
+      From-scratch WebGPU decode on Metal. Stock ONNX Runtime is 70 tok/s on an
+      M5 Max. This engine is 115 tok/s wall on the chat-templated prompt, 142
+      tok/s on GPU timestamps (1.64x).
+    </p>
+    <video src="./video/nemotron-decode.mp4" autoplay muted loop playsinline></video>
+    <p class="load-note">
+      The climb video is the earlier raw-encode run. The chat-template bench
+      below is the 115 headline.
+    </p>
+    <div class="nums">
+      <div class="card"><b>70</b><span>stock ORT</span></div>
+      <div class="card"><b>115</b><span>engine wall</span></div>
+      <div class="card"><b>142</b><span>engine GPU</span></div>
+    </div>
+    <p class="warn" id="gpuWarn">Needs Chrome (or Edge) with WebGPU. Safari is not enough.</p>
+    <p class="load-note">
+      About 2.5 GB download from the Hub (two q4 shards). The GPU must be able
+      to bind lm_head (205 MB). Weights stay on
+      onnx-community/NVIDIA-Nemotron-3-Nano-4B-BF16-ONNX.
+    </p>
+    <button id="loadBtn" type="button">Load model</button>
+    <div class="bar" aria-hidden="true"><i id="bar"></i></div>
+    <p class="credit">
+      Kernels and decode engine written by Grok 4.6 in Cursor.
+      <a href="https://github.com/ethanolivertroy/nemotron-webgpu-decode">Source</a>
+    </p>
+  </aside>
+  <main class="chat">
+    <div class="chat-head">
+      <span class="dot" id="dot"></span>
+      <span class="meta" id="status">Model not loaded</span>
+      <span class="tok" id="tps"></span>
+    </div>
+    <div id="log"></div>
+    <label class="skip"><input type="checkbox" id="noThink" checked> Skip thinking (/no_think)</label>
+    <form class="form" id="form">
+      <input id="prompt" type="text" placeholder="Write a haiku about GPU kernels." disabled autocomplete="off">
+      <button id="sendBtn" type="submit" disabled>Send</button>
+    </form>
+  </main>
+  <script type="module" src="./chat/app.js"></script>
+</body>
+</html>

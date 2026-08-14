@@ -1,0 +1,137 @@
+// Decode GEMV: WG=256, 4 N-columns, split-K + subgroup reduce.
+// q4 block=32. Zero-points are 4-bit, packed 8 per u32, row-major [N, n_blocks].
+// Dispatch ceil(N/4). epilogue=1 applies relu2 on the written columns.
+
+enable subgroups;
+
+struct Params {
+  K: u32,
+  N: u32,
+  n_blocks: u32,
+  epilogue: u32,
+};
+
+@group(0) @binding(0) var<storage, read> A: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> B: array<vec4<u32>>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read> zp: array<u32>;
+@group(0) @binding(4) var<storage, read_write> Y: array<f32>;
+@group(0) @binding(5) var<uniform> params: Params;
+
+const WG: u32 = 256u;
+const N_COLS: u32 = 4u;
+
+var<workgroup> sg_partials: array<vec4<f32>, 8>;
+
+fn load_zp(col: u32, blk: u32) -> f32 {
+  let nib = col * params.n_blocks + blk;
+  return f32((zp[nib / 8u] >> ((nib % 8u) * 4u)) & 15u);
+}
+
+fn dequant_dot(packed: vec4<u32>, scale: f32, zero: f32, a0: vec4<f32>, a1: vec4<f32>, a2: vec4<f32>, a3: vec4<f32>, a4: vec4<f32>, a5: vec4<f32>, a6: vec4<f32>, a7: vec4<f32>) -> f32 {
+  let s = vec4<f32>(scale);
+  let z = vec4<f32>(zero);
+  var acc: f32 = 0.0;
+  {
+    let lo = unpack4xU8(packed.x & 0x0F0F0F0Fu);
+    let hi = unpack4xU8((packed.x >> 4u) & 0x0F0F0F0Fu);
+    let d0 = (vec4<f32>(f32(lo.x), f32(hi.x), f32(lo.y), f32(hi.y)) - z) * s;
+    let d1 = (vec4<f32>(f32(lo.z), f32(hi.z), f32(lo.w), f32(hi.w)) - z) * s;
+    acc += dot(a0, d0) + dot(a1, d1);
+  }
+  {
+    let lo = unpack4xU8(packed.y & 0x0F0F0F0Fu);
+    let hi = unpack4xU8((packed.y >> 4u) & 0x0F0F0F0Fu);
+    let d0 = (vec4<f32>(f32(lo.x), f32(hi.x), f32(lo.y), f32(hi.y)) - z) * s;
+    let d1 = (vec4<f32>(f32(lo.z), f32(hi.z), f32(lo.w), f32(hi.w)) - z) * s;
+    acc += dot(a2, d0) + dot(a3, d1);
+  }
+  {
+    let lo = unpack4xU8(packed.z & 0x0F0F0F0Fu);
+    let hi = unpack4xU8((packed.z >> 4u) & 0x0F0F0F0Fu);
+    let d0 = (vec4<f32>(f32(lo.x), f32(hi.x), f32(lo.y), f32(hi.y)) - z) * s;
+    let d1 = (vec4<f32>(f32(lo.z), f32(hi.z), f32(lo.w), f32(hi.w)) - z) * s;
+    acc += dot(a4, d0) + dot(a5, d1);
+  }
+  {
+    let lo = unpack4xU8(packed.w & 0x0F0F0F0Fu);
+    let hi = unpack4xU8((packed.w >> 4u) & 0x0F0F0F0Fu);
+    let d0 = (vec4<f32>(f32(lo.x), f32(hi.x), f32(lo.y), f32(hi.y)) - z) * s;
+    let d1 = (vec4<f32>(f32(lo.z), f32(hi.z), f32(lo.w), f32(hi.w)) - z) * s;
+    acc += dot(a6, d0) + dot(a7, d1);
+  }
+  return acc;
+}
+
+fn sg_sum_v4(value: vec4<f32>) -> vec4<f32> {
+  var x = value;
+  x = x + subgroupShuffleXor(x, 1u);
+  x = x + subgroupShuffleXor(x, 2u);
+  x = x + subgroupShuffleXor(x, 4u);
+  x = x + subgroupShuffleXor(x, 8u);
+  x = x + subgroupShuffleXor(x, 16u);
+  return x;
+}
+
+fn relu2(v: f32) -> f32 {
+  let r = max(v, 0.0);
+  return r * r;
+}
+
+@compute @workgroup_size(WG, 1, 1)
+fn main(
+  @builtin(workgroup_id) wg: vec3<u32>,
+  @builtin(local_invocation_id) lid: vec3<u32>,
+) {
+  let tid = lid.x;
+  let col0 = wg.x * N_COLS;
+  let n_blocks = params.n_blocks;
+  let n = params.N;
+  var acc = vec4<f32>(0.0);
+
+  for (var blk = tid; blk < n_blocks; blk += WG) {
+    let a_base = blk * 8u;
+    let a0 = A[a_base + 0u];
+    let a1 = A[a_base + 1u];
+    let a2 = A[a_base + 2u];
+    let a3 = A[a_base + 3u];
+    let a4 = A[a_base + 4u];
+    let a5 = A[a_base + 5u];
+    let a6 = A[a_base + 6u];
+    let a7 = A[a_base + 7u];
+    for (var r = 0u; r < N_COLS; r++) {
+      let col = col0 + r;
+      if (col < n) {
+        let packed = B[col * n_blocks + blk];
+        let scale = scales[col * n_blocks + blk];
+        let zero = load_zp(col, blk);
+        let d = dequant_dot(packed, scale, zero, a0, a1, a2, a3, a4, a5, a6, a7);
+        switch r {
+          case 0u: { acc.x += d; }
+          case 1u: { acc.y += d; }
+          case 2u: { acc.z += d; }
+          default: { acc.w += d; }
+        }
+      }
+    }
+  }
+
+  let red = sg_sum_v4(acc);
+  if ((tid & 31u) == 0u) {
+    sg_partials[tid >> 5u] = red;
+  }
+  workgroupBarrier();
+  if (tid == 0u) {
+    var tot = vec4<f32>(0.0);
+    for (var i = 0u; i < 8u; i++) {
+      tot += sg_partials[i];
+    }
+    if (params.epilogue == 1u) {
+      tot = vec4<f32>(relu2(tot.x), relu2(tot.y), relu2(tot.z), relu2(tot.w));
+    }
+    if (col0 + 0u < n) { Y[col0 + 0u] = tot.x; }
+    if (col0 + 1u < n) { Y[col0 + 1u] = tot.y; }
+    if (col0 + 2u < n) { Y[col0 + 2u] = tot.z; }
+    if (col0 + 3u < n) { Y[col0 + 3u] = tot.w; }
+  }
+}

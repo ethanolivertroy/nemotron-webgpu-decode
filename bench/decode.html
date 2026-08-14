@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Nemotron fused decode</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, sans-serif; background: #0b0b10; color: #e8e8ef; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.2rem; }
+    pre { background: #16161d; padding: 1rem; border-radius: 8px; white-space: pre-wrap; min-height: 8rem; }
+    a { color: #7aa2ff; }
+    .note { color: #a6adc8; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <h1>Nemotron 3 Nano 4B q4 · fused WebGPU decode</h1>
+  <p class="note">
+    M5 Max / Chrome / Metal: 129 tok/s wall vs stock ORT 70 tok/s (1.85x).
+    GPU timestamps: 141 tok/s, matching the q4 lm_head bandwidth ceiling.
+    Output is greedy decode with the instruct chat template.
+    First token matches stock ORT on the same prompt ids.
+    <a href="./">Home / chat</a> ·
+    <a href="/charts/chart.html">Charts</a> ·
+    <a href="/bench/engine.html">GEMV microbench</a>
+  </p>
+  <pre id="log">starting…</pre>
+  <script type="module" src="./decode.js"></script>
+</body>
+</html>

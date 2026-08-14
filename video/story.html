@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Nemotron WebGPU decode · tok/s</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #000;
+      overflow: hidden;
+      font-family: -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif;
+    }
+    canvas { display: block; width: 100vw; height: 100vh; }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const W = 1920;
+const H = 1080;
+const DURATION = 24;
+
+const BG = '#050505';
+const ACCENT = '#f54e00';
+const WHITE = '#f4f4f5';
+const MUTED = '#a7a9ac';
+const DIM = '#5a5a5f';
+const GRID = 'rgba(255,255,255,0.05)';
+const MONO = 'ui-monospace, "SF Mono", Menlo, monospace';
+const SANS = '-apple-system, "SF Pro Display", sans-serif';
+
+const POINTS = [
+  { x: 0, y: 69.76, title: 'Stock runtime', detail: 'The usual in-browser setup.' },
+  { x: 1, y: 71.3, title: 'New shaders, same stack', detail: 'Almost no gain.' },
+  { x: 2, y: 100.47, title: 'Our own decoder', detail: 'The browser talks to the GPU itself.' },
+  { x: 3, y: 116.63, title: 'More work at once', detail: 'Parts of the model stop waiting in line.' },
+  { x: 4, y: 125.45, title: 'Stay on the GPU', detail: 'Tokens stop bouncing back to the CPU.' },
+];
+
+const REJECT = { x: 2.35, y: 95.94 };
+
+const params = new URLSearchParams(location.search);
+const seek = params.has('t') ? Number(params.get('t')) : null;
+const paused = params.has('t') || params.get('paused') === '1';
+const recording = params.get('record') === '1';
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+function fit() {
+  const dpr = paused || recording ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+fit();
+
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function smooth(t) {
+  t = clamp(t, 0, 1);
+  return t * t * (3 - 2 * t);
+}
+function fade(t, a, b) {
+  return smooth((t - a) / Math.max(0.001, b - a));
+}
+
+function lineProgressAt(t) {
+  const segs = [
+    { t0: 1.2, t1: 2.0, a: 0, b: 0 },
+    { t0: 2.2, t1: 4.2, a: 0, b: 1 },
+    { t0: 8.6, t1: 11.4, a: 1, b: 2 },
+    { t0: 13.2, t1: 15.6, a: 2, b: 3 },
+    { t0: 16.4, t1: 18.8, a: 3, b: 4 },
+  ];
+  if (t < segs[0].t0) return -1;
+  let p = 0;
+  for (const seg of segs) {
+    if (t >= seg.t1) p = seg.b;
+    else if (t >= seg.t0) {
+      return lerp(seg.a, seg.b, smooth((t - seg.t0) / (seg.t1 - seg.t0)));
+    }
+  }
+  return p;
+}
+
+function stateAt(t) {
+  const lineProgress = lineProgressAt(t);
+  const yMax = t > 7.8 ? lerp(100, 150, fade(t, 7.8, 9.6)) : 100;
+
+  return {
+    t,
+    intro: fade(t, 0.15, 1.0),
+    lineProgress,
+    yMax,
+    heroIn: t < 1.2 ? 0 : fade(t, 1.2, 2.0),
+    showRef: fade(t, 0.8, 1.6),
+    plateau: fade(t, 4.8, 5.8) * (1 - fade(t, 7.8, 8.6)),
+    inflection: fade(t, 7.6, 8.4) * (1 - fade(t, 19.2, 20.0)),
+    reject: fade(t, 11.8, 12.6),
+    rejectLabel: fade(t, 11.8, 12.6) * (1 - fade(t, 15.0, 15.8)),
+    gpuRef: fade(t, 19.6, 20.4),
+    holdBadge: fade(t, 20.0, 20.8),
+  };
+}
+
+function plotRect() {
+  return { x: 96, y: 100, w: 1180, h: 852 };
+}
+
+function mapX(x) {
+  const p = plotRect();
+  return p.x + (x / 4.35) * p.w;
+}
+
+function mapY(toks, yMax) {
+  const p = plotRect();
+  return p.y + p.h - (toks / yMax) * p.h;
+}
+
+function polylineAt(progress) {
+  const max = POINTS.length - 1;
+  const p = clamp(progress, 0, max);
+  const i = Math.min(Math.floor(p), max - 1);
+  const f = p - i;
+  const a = POINTS[i];
+  const b = POINTS[i + 1];
+  return { x: lerp(a.x, b.x, f), y: lerp(a.y, b.y, f) };
+}
+
+function samples(progress) {
+  const pts = [];
+  const n = Math.max(1, Math.ceil(progress * 40) + 1);
+  for (let k = 0; k <= n; k++) {
+    pts.push(polylineAt((progress * k) / n));
+  }
+  pts[pts.length - 1] = polylineAt(progress);
+  return pts;
+}
+
+function heroFor(prog) {
+  const i = Math.max(0, Math.min(POINTS.length - 1, Math.floor(Math.max(prog, 0) + 1e-6)));
+  return POINTS[i];
+}
+
+function draw(t) {
+  const s = stateAt(t);
+  const p = plotRect();
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = BG;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.globalAlpha = s.intro;
+
+  ctx.strokeStyle = GRID;
+  ctx.lineWidth = 1;
+  const yTicks = (s.yMax > 120 ? [0, 50, 100, 150] : [0, 50, 100])
+    .filter((yt) => mapY(yt, s.yMax) >= p.y - 1);
+  for (const yt of yTicks) {
+    const y = mapY(yt, s.yMax);
+    ctx.beginPath();
+    ctx.moveTo(p.x, y);
+    ctx.lineTo(p.x + p.w, y);
+    ctx.stroke();
+  }
+  for (let i = 0; i <= 4; i++) {
+    const x = mapX(i);
+    ctx.beginPath();
+    ctx.moveTo(x, p.y);
+    ctx.lineTo(x, p.y + p.h);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = MUTED;
+  ctx.font = `600 13px ${MONO}`;
+  ctx.letterSpacing = '0.18em';
+  ctx.textAlign = 'left';
+  ctx.fillText('TOKENS PER SECOND', p.x, 56);
+  ctx.textAlign = 'right';
+  ctx.fillText('ITERATION', p.x + p.w, p.y + p.h + 58);
+  ctx.letterSpacing = '0px';
+
+  ctx.fillStyle = DIM;
+  ctx.font = `400 13px ${MONO}`;
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (const yt of yTicks) {
+    if (yt === 0) continue;
+    ctx.fillText(String(yt), p.x - 14, mapY(yt, s.yMax));
+  }
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  for (let i = 0; i <= 4; i++) {
+    ctx.fillText(String(i), mapX(i), p.y + p.h + 14);
+  }
+  ctx.textBaseline = 'alphabetic';
+
+  if (s.showRef > 0) {
+    ctx.save();
+    ctx.globalAlpha = s.intro * s.showRef;
+    const y = mapY(69.76, s.yMax);
+    ctx.setLineDash([5, 7]);
+    ctx.strokeStyle = 'rgba(200,200,196,0.4)';
+    ctx.lineWidth = 1.25;
+    ctx.beginPath();
+    ctx.moveTo(p.x, y);
+    ctx.lineTo(p.x + p.w, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = MUTED;
+    ctx.font = `400 13px ${MONO}`;
+    ctx.textAlign = 'left';
+    ctx.fillText('stock runtime (69.8)', p.x + 12, y - 10);
+    ctx.restore();
+  }
+
+  if (s.gpuRef > 0) {
+    ctx.save();
+    ctx.globalAlpha = s.intro * s.gpuRef;
+    const y = mapY(140.0, s.yMax);
+    ctx.setLineDash([5, 7]);
+    ctx.strokeStyle = 'rgba(200,200,196,0.4)';
+    ctx.lineWidth = 1.25;
+    ctx.beginPath();
+    ctx.moveTo(p.x, y);
+    ctx.lineTo(p.x + p.w, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = MUTED;
+    ctx.font = `400 13px ${MONO}`;
+    ctx.textAlign = 'left';
+    ctx.fillText('GPU itself (140)', p.x + 12, y - 10);
+    ctx.restore();
+  }
+
+  if (s.inflection > 0) {
+    ctx.save();
+    ctx.globalAlpha = s.intro * s.inflection;
+    const x = mapX(1.5);
+    ctx.setLineDash([4, 6]);
+    ctx.strokeStyle = 'rgba(243,243,238,0.3)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, p.y + 16);
+    ctx.lineTo(x, p.y + p.h);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = ACCENT;
+    ctx.font = `700 11px ${MONO}`;
+    ctx.letterSpacing = '0.14em';
+    ctx.textAlign = 'left';
+    ctx.fillText('THE JUMP', x + 10, p.y + 36);
+    ctx.letterSpacing = '0px';
+    ctx.fillStyle = WHITE;
+    ctx.font = `400 15px ${SANS}`;
+    ctx.fillText('We write our own decoder.', x + 10, p.y + 58);
+    ctx.restore();
+  }
+
+  const prog = s.lineProgress;
+  const pts = prog >= 0 ? samples(Math.max(prog, 0)) : [];
+  const end = prog >= 0 ? polylineAt(Math.max(prog, 0)) : POINTS[0];
+
+  if (prog >= 0 && s.intro > 0) {
+    ctx.save();
+    ctx.globalAlpha = s.intro;
+    if (prog > 0.02) {
+      ctx.beginPath();
+      ctx.moveTo(mapX(pts[0].x), mapY(0, s.yMax));
+      for (const pt of pts) ctx.lineTo(mapX(pt.x), mapY(pt.y, s.yMax));
+      ctx.lineTo(mapX(end.x), mapY(0, s.yMax));
+      ctx.closePath();
+      const fill = ctx.createLinearGradient(0, mapY(end.y, s.yMax), 0, mapY(0, s.yMax));
+      fill.addColorStop(0, 'rgba(245, 78, 0, 0.10)');
+      fill.addColorStop(1, 'rgba(245, 78, 0, 0.01)');
+      ctx.fillStyle = fill;
+      ctx.fill();
+    }
+
+    ctx.strokeStyle = ACCENT;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    if (prog > 0.02) {
+      ctx.beginPath();
+      ctx.moveTo(mapX(pts[0].x), mapY(pts[0].y, s.yMax));
+      for (const pt of pts) ctx.lineTo(mapX(pt.x), mapY(pt.y, s.yMax));
+      ctx.stroke();
+    }
+
+    const revealed = Math.floor(prog + 1e-6);
+    for (let i = 0; i <= revealed && i < POINTS.length; i++) {
+      if (prog < i) continue;
+      const appear = i === revealed ? clamp(prog - i + 0.15, 0, 1) : 1;
+      const pt = POINTS[i];
+      const x = mapX(pt.x);
+      const y = mapY(pt.y, s.yMax);
+      ctx.globalAlpha = s.intro * appear;
+      ctx.fillStyle = BG;
+      ctx.beginPath();
+      ctx.arc(x, y, 4.6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = ACCENT;
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+    }
+
+    if (prog >= 0.02) {
+      const x = mapX(end.x);
+      const y = mapY(end.y, s.yMax);
+      ctx.globalAlpha = s.intro;
+      ctx.strokeStyle = ACCENT;
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.arc(x, y, 10, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  if (s.plateau > 0) {
+    ctx.save();
+    ctx.globalAlpha = s.intro * s.plateau;
+    const x = mapX(1) + 20;
+    const y = mapY(71.3, s.yMax) - 84;
+    ctx.fillStyle = ACCENT;
+    ctx.font = `700 11px ${MONO}`;
+    ctx.letterSpacing = '0.14em';
+    ctx.textAlign = 'left';
+    ctx.fillText('PLATEAU', x, y);
+    ctx.letterSpacing = '0px';
+    ctx.fillStyle = WHITE;
+    ctx.font = `400 16px ${SANS}`;
+    ctx.fillText('Patching the old stack cannot go further.', x, y + 26);
+    ctx.restore();
+  }
+
+  if (s.reject > 0) {
+    ctx.save();
+    ctx.globalAlpha = s.intro * s.reject;
+    const x = mapX(REJECT.x);
+    const y = mapY(REJECT.y, s.yMax);
+    ctx.strokeStyle = DIM;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x - 6, y - 6);
+    ctx.lineTo(x + 6, y + 6);
+    ctx.moveTo(x + 6, y - 6);
+    ctx.lineTo(x - 6, y + 6);
+    ctx.stroke();
+    if (s.rejectLabel > 0) {
+      ctx.globalAlpha = s.intro * s.rejectLabel;
+      ctx.fillStyle = MUTED;
+      ctx.font = `400 13px ${MONO}`;
+      ctx.textAlign = 'left';
+      ctx.fillText('one pass, slower, thrown out', x + 14, y + 4);
+    }
+    ctx.restore();
+  }
+
+  if (prog >= 1.6) {
+    const lastI = Math.min(Math.floor(prog + 1e-4), POINTS.length - 1);
+    const chipAlpha = lastI >= POINTS.length - 1
+      ? 1
+      : 1 - smooth((prog - (lastI + 0.25)) / 0.35);
+    if (lastI >= 2 && chipAlpha > 0) {
+      const last = POINTS[lastI];
+      const x = mapX(last.x);
+      const y = mapY(last.y, s.yMax);
+      ctx.save();
+      ctx.globalAlpha = s.intro * clamp(chipAlpha, 0, 1);
+      const right = last.x >= 3.5;
+      ctx.textAlign = right ? 'right' : 'left';
+      const lx = right ? x - 16 : x + 16;
+      ctx.fillStyle = ACCENT;
+      ctx.font = `700 11px ${MONO}`;
+      ctx.letterSpacing = '0.14em';
+      ctx.fillText('NEW MAX', lx, y - 30);
+      ctx.letterSpacing = '0px';
+      ctx.fillStyle = WHITE;
+      ctx.font = `400 14px ${SANS}`;
+      ctx.fillText(`${last.y.toFixed(1)} tokens/s · ${last.title}`, lx, y - 10);
+      ctx.restore();
+    }
+  }
+
+  if (s.heroIn > 0 && prog >= 0) {
+    const hero = heroFor(prog);
+    const heroVal = end.y;
+    ctx.save();
+    ctx.globalAlpha = s.intro * s.heroIn;
+    const hx = 1832;
+    ctx.textAlign = 'right';
+    ctx.fillStyle = WHITE;
+    ctx.font = `700 120px ${SANS}`;
+    ctx.fillText(heroVal.toFixed(1), hx, 420);
+    ctx.fillStyle = MUTED;
+    ctx.font = `400 20px ${SANS}`;
+    ctx.fillText('tokens per second', hx, 458);
+    ctx.fillStyle = ACCENT;
+    ctx.font = `700 30px ${SANS}`;
+    ctx.fillText(hero.title, hx, 530);
+    ctx.fillStyle = MUTED;
+    ctx.font = `400 16px ${SANS}`;
+    ctx.fillText(hero.detail, hx, 562);
+    if (s.holdBadge > 0) {
+      ctx.globalAlpha = s.intro * s.heroIn * s.holdBadge;
+      ctx.fillStyle = ACCENT;
+      ctx.font = `700 20px ${SANS}`;
+      ctx.fillText('1.8x stock', hx, 620);
+    }
+    ctx.restore();
+  }
+
+  ctx.save();
+  ctx.globalAlpha = s.intro;
+  ctx.fillStyle = DIM;
+  ctx.font = `500 13px ${MONO}`;
+  ctx.textAlign = 'left';
+  ctx.fillText('NEMOTRON 3 NANO 4B Q4 · WEBGPU DECODE', 96, 1044);
+  ctx.textAlign = 'right';
+  ctx.fillText('GROK 4.6 · M5 MAX · CHROME 151 · METAL', 1832, 1044);
+  ctx.restore();
+
+  ctx.globalAlpha = 1;
+  if (t >= DURATION - 0.05) document.body.dataset.done = '1';
+}
+
+let start = 0;
+function loop(now) {
+  if (!start) start = now;
+  const t = paused && seek != null ? seek : Math.min((now - start) / 1000, DURATION);
+  draw(t);
+  if (!paused && t < DURATION) requestAnimationFrame(loop);
+  else if (!paused) draw(DURATION);
+}
+
+window.draw = draw;
+
+if (paused) {
+  fit();
+  draw(seek == null ? 0 : seek);
+} else {
+  requestAnimationFrame(loop);
+}
+</script>
+</body>
+</html>

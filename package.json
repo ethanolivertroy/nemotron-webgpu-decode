@@ -1,0 +1,22 @@
+{
+  "name": "nemotron-webgpu-decode",
+  "version": "0.1.0",
+  "private": true,
+  "description": "From-scratch WebGPU decode for Nemotron 3 Nano 4B q4 in Chrome. Written by Grok 4.6.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:space": "SPACE_BUILD=1 vite build",
+    "preview": "vite preview",
+    "charts": "node scripts/screenshot-charts.mjs",
+    "story": "node scripts/record-story.mjs"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.1.0"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.62.1",
+    "vite": "^6.0.0"
+  }
+}

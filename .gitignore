@@ -1,0 +1,9 @@
+node_modules/
+dist/
+harness/last-run.json
+harness/weights/*
+!harness/weights/.gitkeep
+.vite/
+.DS_Store
+video/raw/
+video/stills/

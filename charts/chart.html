@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Nemotron WebGPU decode charts</title>
+  <script src="/chart.umd.min.js"></script>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, sans-serif; background: #0b0b10; color: #e8e8ef; margin: 0; padding: 24px; }
+    h1 { font-size: 20px; margin: 0 0 8px; }
+    h2 { font-size: 14px; margin: 0 0 12px; font-weight: 600; color: #bbb; }
+    .banner { background: #14233a; color: #9ec1ff; padding: 8px 12px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
+    .banner.warn { background: #3f2d00; color: #ffd37a; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .card { background: #16161d; border: 1px solid #2a2a33; border-radius: 12px; padding: 16px; height: 340px; }
+    canvas { max-height: 280px; }
+    @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <h1>Nemotron 3 Nano 4B q4 · in-browser decode</h1>
+  <div class="banner" id="banner">Loading…</div>
+  <div class="grid">
+    <div class="card"><h2>Decode tok/s (128 greedy tokens)</h2><canvas id="c1"></canvas></div>
+    <div class="card"><h2>Wall vs GPU tok/s</h2><canvas id="c2"></canvas></div>
+    <div class="card"><h2>Iteration progress</h2><canvas id="c3"></canvas></div>
+    <div class="card"><h2>lm_head GEMV ms (lower is better)</h2><canvas id="c4"></canvas></div>
+  </div>
+  <script type="module">
+    import { chartData } from './data.js';
+    const sample = !!chartData.sample;
+    const banner = document.getElementById('banner');
+    banner.className = sample ? 'banner warn' : 'banner';
+    banner.textContent = sample
+      ? 'SAMPLE LAYOUT ONLY. Paste M5 Max numbers into charts/data.js and set sample: false.'
+      : `Measured on ${chartData.env}. Greedy decode. Tokens are not yet coherent (q4 zp/layout still off).`;
+
+    const common = {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#bbb' }, grid: { color: '#222' } },
+        y: { ticks: { color: '#bbb' }, grid: { color: '#222' }, beginAtZero: true },
+      },
+    };
+    const barColor = sample ? '#6b5b3a' : '#7aa2ff';
+
+    new Chart(document.getElementById('c1'), {
+      type: 'bar',
+      data: {
+        labels: chartData.decode_tok_s.labels,
+        datasets: [{ data: chartData.decode_tok_s.values, backgroundColor: barColor }],
+      },
+      options: common,
+    });
+    new Chart(document.getElementById('c2'), {
+      type: 'bar',
+      data: {
+        labels: chartData.gpu_vs_wall.labels,
+        datasets: [{ data: chartData.gpu_vs_wall.values, backgroundColor: ['#6b7c93', barColor, '#a6e3a1'] }],
+      },
+      options: common,
+    });
+    new Chart(document.getElementById('c3'), {
+      type: 'line',
+      data: {
+        labels: chartData.iteration_tok_s.labels,
+        datasets: [{
+          data: chartData.iteration_tok_s.values,
+          borderColor: barColor,
+          backgroundColor: barColor,
+          tension: 0.2,
+        }],
+      },
+      options: common,
+    });
+    new Chart(document.getElementById('c4'), {
+      type: 'bar',
+      data: {
+        labels: chartData.gemv_lm_head_ms.labels,
+        datasets: [{ data: chartData.gemv_lm_head_ms.values, backgroundColor: barColor }],
+      },
+      options: common,
+    });
+    document.documentElement.dataset.ready = '1';
+  </script>
+</body>
+</html>
